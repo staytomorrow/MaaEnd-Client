@@ -125,22 +125,12 @@ func main() {
 		wsClient.Stop()
 	}()
 
-	// 处理绑定码
+	// 处理绑定码：使用 channel 解耦绑定码获取与发送
+	bindCodeCh := make(chan string, 1)
+
 	if *bindCode != "" {
-		// 使用命令行参数绑定
-		go func() {
-			// 等待连接成功
-			for !wsClient.IsConnected() {
-				select {
-				case <-ctx.Done():
-					return
-				default:
-				}
-			}
-			wsClient.SendRegister(*bindCode)
-		}()
+		bindCodeCh <- *bindCode
 	} else if !wsClient.HasToken() {
-		// 没有 token，需要绑定
 		fmt.Println("\n设备未绑定，请按以下步骤操作：")
 		fmt.Println("1. 在 Web 端获取绑定码")
 		fmt.Println("2. 输入绑定码后按回车")
@@ -151,16 +141,35 @@ func main() {
 			for {
 				code, err := reader.ReadString('\n')
 				if err != nil {
-					continue
+					select {
+					case <-ctx.Done():
+						return
+					default:
+						continue
+					}
 				}
 				code = strings.TrimSpace(code)
-				if code != "" && wsClient.IsConnected() {
-					wsClient.SendRegister(code)
-					break
+				if code != "" {
+					bindCodeCh <- code
+					return
 				}
 			}
 		}()
 	}
+
+	// 等待连接成功后发送绑定码（如果有的话）
+	go func() {
+		select {
+		case code := <-bindCodeCh:
+			// 等待连接建立
+			select {
+			case <-wsClient.ConnectedCh():
+				wsClient.SendRegister(code)
+			case <-ctx.Done():
+			}
+		case <-ctx.Done():
+		}
+	}()
 
 	// 运行客户端
 	log.Printf("连接服务器: %s", cfg.Server.WsURL)

@@ -33,6 +33,7 @@ type Client struct {
 	// 连接状态
 	connected   bool
 	connectedMu sync.RWMutex
+	connectedCh chan struct{} // closed when first connected
 
 	// 重连计数
 	reconnectCount int
@@ -69,10 +70,17 @@ type MaaWrapperInterface interface {
 // NewClient 创建客户端
 func NewClient(cfg *config.Config) *Client {
 	return &Client{
-		config: cfg,
-		sendCh: make(chan []byte, 256),
-		stopCh: make(chan struct{}),
+		config:      cfg,
+		sendCh:      make(chan []byte, 256),
+		stopCh:      make(chan struct{}),
+		connectedCh: make(chan struct{}),
 	}
+}
+
+// ConnectedCh returns a channel that is closed when the client first connects.
+// Can be used to wait for connection without busy-looping.
+func (c *Client) ConnectedCh() <-chan struct{} {
+	return c.connectedCh
 }
 
 // SetMaaWrapper 设置 MaaWrapper
@@ -108,6 +116,13 @@ func (c *Client) Run(ctx context.Context) error {
 
 		// 重置重连计数
 		c.reconnectCount = 0
+
+		// 通知等待连接的 goroutine（仅首次触发）
+		select {
+		case <-c.connectedCh:
+		default:
+			close(c.connectedCh)
+		}
 
 		// 连接成功回调
 		if c.onConnected != nil {

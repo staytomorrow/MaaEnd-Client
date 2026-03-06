@@ -86,9 +86,10 @@ type AuthPayload struct {
 
 // CapabilitiesPayload 设备能力上报负载
 type CapabilitiesPayload struct {
-	Tasks       []TaskInfo `json:"tasks"`
-	Controllers []string   `json:"controllers"`
-	Resources   []string   `json:"resources"`
+	Tasks       []TaskInfo   `json:"tasks"`
+	Controllers []string     `json:"controllers"`
+	Resources   []string     `json:"resources"`
+	Presets     []PresetInfo `json:"presets,omitempty"`
 }
 
 // TaskInfo 任务信息
@@ -97,21 +98,50 @@ type TaskInfo struct {
 	Label       string       `json:"label"`
 	Description string       `json:"description,omitempty"`
 	Options     []OptionInfo `json:"options,omitempty"`
+	Controller  []string     `json:"controller,omitempty"`
+	Resource    []string     `json:"resource,omitempty"`
 }
 
 // OptionInfo 选项信息
 type OptionInfo struct {
-	Name        string     `json:"name"`
-	Type        string     `json:"type"`
-	Label       string     `json:"label"`
-	Cases       []CaseInfo `json:"cases,omitempty"`
-	DefaultCase string     `json:"default_case,omitempty"`
+	Name        string      `json:"name"`
+	Type        string      `json:"type"`
+	Label       string      `json:"label"`
+	Description string      `json:"description,omitempty"`
+	Cases       []CaseInfo  `json:"cases,omitempty"`
+	Inputs      []InputInfo `json:"inputs,omitempty"`
+	DefaultCase string      `json:"default_case,omitempty"`
 }
 
 // CaseInfo 选项分支
 type CaseInfo struct {
 	Name  string `json:"name"`
 	Label string `json:"label"`
+}
+
+// InputInfo 输入字段信息
+type InputInfo struct {
+	Name         string      `json:"name"`
+	Label        string      `json:"label"`
+	Description  string      `json:"description,omitempty"`
+	PipelineType string      `json:"pipeline_type,omitempty"`
+	Default      interface{} `json:"default,omitempty"`
+	Verify       string      `json:"verify,omitempty"`
+	PatternMsg   string      `json:"pattern_msg,omitempty"`
+}
+
+// PresetInfo 预设任务组信息
+type PresetInfo struct {
+	Name        string           `json:"name"`
+	Label       string           `json:"label"`
+	Description string           `json:"description,omitempty"`
+	Tasks       []PresetTaskInfo `json:"tasks"`
+}
+
+// PresetTaskInfo 预设中的单个任务
+type PresetTaskInfo struct {
+	Name    string                 `json:"name"`
+	Options map[string]interface{} `json:"options,omitempty"`
 }
 
 // TaskStatusPayload 任务状态上报负载

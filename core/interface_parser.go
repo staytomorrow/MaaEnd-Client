@@ -8,6 +8,56 @@ import (
 	"strings"
 )
 
+// stripJSONComments removes single-line (//) and multi-line (/* */) comments
+// from JSON data, respecting string literals so that "//" inside strings is preserved.
+func stripJSONComments(data []byte) []byte {
+	var result []byte
+	i := 0
+	n := len(data)
+
+	for i < n {
+		if data[i] == '"' {
+			// Inside a string literal — copy until the closing unescaped quote
+			result = append(result, data[i])
+			i++
+			for i < n {
+				if data[i] == '\\' && i+1 < n {
+					result = append(result, data[i], data[i+1])
+					i += 2
+					continue
+				}
+				result = append(result, data[i])
+				if data[i] == '"' {
+					i++
+					break
+				}
+				i++
+			}
+		} else if i+1 < n && data[i] == '/' && data[i+1] == '/' {
+			// Single-line comment — skip until newline
+			i += 2
+			for i < n && data[i] != '\n' {
+				i++
+			}
+		} else if i+1 < n && data[i] == '/' && data[i+1] == '*' {
+			// Multi-line comment — skip until */
+			i += 2
+			for i+1 < n {
+				if data[i] == '*' && data[i+1] == '/' {
+					i += 2
+					break
+				}
+				i++
+			}
+		} else {
+			result = append(result, data[i])
+			i++
+		}
+	}
+
+	return result
+}
+
 // ProjectInterface interface.json 的完整结构
 type ProjectInterface struct {
 	InterfaceVersion int                      `json:"interface_version"`
@@ -22,23 +72,56 @@ type ProjectInterface struct {
 	Languages        map[string]string        `json:"languages"`
 	Controllers      []ControllerConfig       `json:"controller"`
 	Resources        []ResourceConfig         `json:"resource"`
-	Agent            AgentConfig              `json:"agent"`
+	Agent            []AgentConfig            `json:"agent"`
 	Tasks            []TaskConfig             `json:"task"`
 	Options          map[string]*OptionConfig `json:"option"`
 	Import           []string                 `json:"import"` // 外部任务文件路径列表
+
+	Presets          []PresetConfig           `json:"-"` // 从导入文件中解析的 Preset
 
 	// 解析后的国际化文本
 	i18nTexts map[string]map[string]string // lang -> key -> value
 	basePath  string                       // interface.json 所在目录
 }
 
+// PresetConfig 预设任务组配置
+type PresetConfig struct {
+	Name        string       `json:"name"`
+	Label       string       `json:"label"`
+	Description string       `json:"description,omitempty"`
+	Tasks       []PresetTask `json:"task"`
+}
+
+// PresetTask 预设中的单个任务
+type PresetTask struct {
+	Name   string                 `json:"name"`
+	Option map[string]interface{} `json:"option,omitempty"`
+}
+
 // ControllerConfig 控制器配置
 type ControllerConfig struct {
 	Name               string       `json:"name"`
 	Label              string       `json:"label"`
+	Description        string       `json:"description,omitempty"`
 	Type               string       `json:"type"`
 	Win32              *Win32Config `json:"win32,omitempty"`
+	Adb                *AdbConfig   `json:"adb,omitempty"`
+	PlayCover          *PlayCoverConfig `json:"playcover,omitempty"`
+	AttachResourcePath []string     `json:"attach_resource_path,omitempty"`
 	PermissionRequired bool         `json:"permission_required"`
+}
+
+// AdbConfig ADB 控制器配置
+type AdbConfig struct {
+	Address       string `json:"address,omitempty"`
+	Config        string `json:"config,omitempty"`
+	ScreencapType int    `json:"screencap_type,omitempty"`
+	InputType     int    `json:"input_type,omitempty"`
+}
+
+// PlayCoverConfig PlayCover 控制器配置
+type PlayCoverConfig struct {
+	UUID string `json:"uuid,omitempty"`
 }
 
 // Win32Config Win32 控制器配置
@@ -52,8 +135,9 @@ type Win32Config struct {
 
 // ResourceConfig 资源配置
 type ResourceConfig struct {
-	Name string   `json:"name"`
-	Path []string `json:"path"`
+	Name  string   `json:"name"`
+	Label string   `json:"label,omitempty"`
+	Path  []string `json:"path"`
 }
 
 // AgentConfig Agent 配置
@@ -84,6 +168,7 @@ type OptionConfig struct {
 	Cases            []CaseConfig           `json:"cases,omitempty"`
 	Inputs           []InputConfig          `json:"inputs,omitempty"`
 	DefaultCase      string                 `json:"default_case,omitempty"`
+	Controller       []string               `json:"controller,omitempty"`
 	PipelineOverride map[string]interface{} `json:"pipeline_override,omitempty"`
 }
 
@@ -102,6 +187,7 @@ type InputConfig struct {
 	Description  string      `json:"description,omitempty"`
 	PipelineType string      `json:"pipeline_type,omitempty"`
 	Verify       string      `json:"verify,omitempty"`
+	PatternMsg   string      `json:"pattern_msg,omitempty"`
 	Default      interface{} `json:"default,omitempty"`
 }
 
@@ -134,6 +220,8 @@ func LoadInterface(maaEndPath string) (*ProjectInterface, error) {
 	if err != nil {
 		return nil, fmt.Errorf("读取 interface.json 失败: %w", err)
 	}
+
+	data = stripJSONComments(data)
 
 	var pi ProjectInterface
 	if err := json.Unmarshal(data, &pi); err != nil {
@@ -171,6 +259,7 @@ func LoadInterface(maaEndPath string) (*ProjectInterface, error) {
 type ImportedFile struct {
 	Tasks   []TaskConfig             `json:"task"`
 	Options map[string]*OptionConfig `json:"option"`
+	Presets []PresetConfig           `json:"preset"`
 }
 
 // loadImportedFile 加载单个导入文件，合并 task 和 option
@@ -181,6 +270,8 @@ func (pi *ProjectInterface) loadImportedFile(relativePath string) error {
 	if err != nil {
 		return fmt.Errorf("读取文件失败: %w", err)
 	}
+
+	data = stripJSONComments(data)
 
 	var imported ImportedFile
 	if err := json.Unmarshal(data, &imported); err != nil {
@@ -196,6 +287,9 @@ func (pi *ProjectInterface) loadImportedFile(relativePath string) error {
 			pi.Options[name] = opt
 		}
 	}
+
+	// 合并预设
+	pi.Presets = append(pi.Presets, imported.Presets...)
 
 	return nil
 }
@@ -305,17 +399,32 @@ func (pi *ProjectInterface) GetOption(name string) *OptionConfig {
 	return pi.Options[name]
 }
 
+// GetPreset 根据名称获取预设配置
+func (pi *ProjectInterface) GetPreset(name string) *PresetConfig {
+	for i := range pi.Presets {
+		if pi.Presets[i].Name == name {
+			return &pi.Presets[i]
+		}
+	}
+	return nil
+}
+
 // GetBasePath 获取基础路径
 func (pi *ProjectInterface) GetBasePath() string {
 	return pi.basePath
 }
 
-// GetAgentExec 获取 Agent 可执行文件完整路径
+// GetAgents 获取所有 Agent 配置（带完整路径）
+func (pi *ProjectInterface) GetAgents() []AgentConfig {
+	return pi.Agent
+}
+
+// GetAgentExec 获取第一个 Agent 的可执行文件完整路径（向后兼容）
 func (pi *ProjectInterface) GetAgentExec() string {
-	if pi.Agent.ChildExec == "" {
+	if len(pi.Agent) == 0 || pi.Agent[0].ChildExec == "" {
 		return ""
 	}
-	return filepath.Join(pi.basePath, pi.Agent.ChildExec)
+	return filepath.Join(pi.basePath, pi.Agent[0].ChildExec)
 }
 
 // GetMaaFWPath 获取 MaaFramework 库路径

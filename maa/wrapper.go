@@ -31,8 +31,8 @@ type Wrapper struct {
 	currentController string
 	currentResource   string
 
-	// Agent 服务
-	agentServer *AgentServer
+	// Agent 服务（可能有多个）
+	agentServers []*AgentServer
 
 	// 事件处理
 	eventHandler *EventHandler
@@ -347,9 +347,24 @@ func (w *Wrapper) RunTask(job *client.Job, statusCh chan<- client.TaskStatusPayl
 		return fmt.Errorf("连接控制器失败: %w", err)
 	}
 
-	// 加载资源
+	// 加载资源（包括控制器附加资源）
 	if err := w.LoadResource(job.Resource); err != nil {
 		return fmt.Errorf("加载资源失败: %w", err)
+	}
+
+	// 加载控制器附加资源
+	ctrlConfig := w.pi.GetController(job.Controller)
+	if ctrlConfig != nil && len(ctrlConfig.AttachResourcePath) > 0 {
+		for _, attachPath := range ctrlConfig.AttachResourcePath {
+			fullPath := attachPath
+			if !filepath.IsAbs(attachPath) {
+				fullPath = filepath.Join(w.pi.GetBasePath(), attachPath)
+			}
+			if w.resource != nil {
+				log.Printf("[Maa] 加载控制器附加资源: %s", fullPath)
+				w.resource.PostBundle(fullPath).Wait()
+			}
+		}
 	}
 
 	// 创建 Tasker
@@ -375,33 +390,31 @@ func (w *Wrapper) RunTask(job *client.Job, statusCh chan<- client.TaskStatusPayl
 		w.eventHandler.OnTaskerTask(status, detail)
 	})
 
-	// 启动 Agent（如果配置了）
-	if w.pi.GetAgentExec() != "" {
-		if err := w.startAgent(); err != nil {
-			log.Printf("[Maa] 启动 Agent 失败: %v (继续执行)", err)
-		}
+	// 启动所有 Agent（如果配置了）
+	if err := w.startAgents(); err != nil {
+		log.Printf("[Maa] 启动 Agent 失败: %v (继续执行)", err)
 	}
 
 	// 创建选项解析器
 	resolver := core.NewOptionResolver(w.pi)
 
 	// 执行每个任务
+	var taskErr error
 	total := len(job.Tasks)
 	for i, taskItem := range job.Tasks {
 		if w.stopRequested {
-			return fmt.Errorf("任务被停止")
+			taskErr = fmt.Errorf("任务被停止")
+			break
 		}
 
-		// 获取任务配置
 		taskConfig := w.pi.GetTask(taskItem.Name)
 		if taskConfig == nil {
-			log.Printf("[Maa] 任务不存在: %s", taskItem.Name)
+			log.Printf("[Maa] 任务不存在，跳过: %s", taskItem.Name)
 			continue
 		}
 
 		log.Printf("[Maa] 执行任务 [%d/%d]: %s", i+1, total, taskItem.Name)
 
-		// 发送状态（使用安全方法防止 channel 已关闭）
 		w.eventHandler.SendStatus(client.TaskStatusPayload{
 			JobID:       job.JobID,
 			Status:      "running",
@@ -410,24 +423,35 @@ func (w *Wrapper) RunTask(job *client.Job, statusCh chan<- client.TaskStatusPayl
 			Message:     fmt.Sprintf("正在执行: %s", taskConfig.Label),
 		})
 
-		// 解析选项
 		override, err := resolver.ResolveTaskOptions(taskItem.Name, taskItem.Options)
 		if err != nil {
-			return fmt.Errorf("解析选项失败: %w", err)
+			taskErr = fmt.Errorf("解析选项失败 (%s): %w", taskItem.Name, err)
+			break
 		}
 
-		// 执行任务
 		taskJob := w.tasker.PostTask(taskConfig.Entry, override)
 		taskJob.Wait()
 
+		if w.stopRequested {
+			taskErr = fmt.Errorf("任务被停止")
+			break
+		}
+
 		if taskJob.Failure() {
-			return fmt.Errorf("任务执行失败: %s", taskItem.Name)
+			taskErr = fmt.Errorf("任务执行失败: %s", taskItem.Name)
+			break
 		}
 
 		log.Printf("[Maa] 任务完成: %s", taskItem.Name)
 	}
 
-	return nil
+	// 停止所有 Agent（任务结束后清理）
+	for _, server := range w.agentServers {
+		server.Stop()
+	}
+	w.agentServers = nil
+
+	return taskErr
 }
 
 // StopTask 停止任务
@@ -474,23 +498,32 @@ func (w *Wrapper) TakeScreenshot() ([]byte, int, int, error) {
 	return buf.Bytes(), bounds.Dx(), bounds.Dy(), nil
 }
 
-// startAgent 启动 Agent
-func (w *Wrapper) startAgent() error {
-	agentExec := w.pi.GetAgentExec()
-	if agentExec == "" {
+// startAgents 启动所有配置的 Agent
+func (w *Wrapper) startAgents() error {
+	agents := w.pi.GetAgents()
+	if len(agents) == 0 {
 		return nil
 	}
 
-	// 检查 Agent 可执行文件是否存在
-	if _, err := os.Stat(agentExec); os.IsNotExist(err) {
-		return fmt.Errorf("Agent 服务文件不存在: %s (部分功能如自定义识别器将不可用)", agentExec)
+	for _, agentCfg := range agents {
+		if agentCfg.ChildExec == "" {
+			continue
+		}
+		agentExec := filepath.Join(w.pi.GetBasePath(), agentCfg.ChildExec)
+
+		if _, err := os.Stat(agentExec); os.IsNotExist(err) {
+			log.Printf("[Maa] Agent 服务文件不存在: %s (部分功能如自定义识别器将不可用)", agentExec)
+			continue
+		}
+
+		server := NewAgentServer()
+		if err := server.Start(agentExec, agentCfg.ChildArgs); err != nil {
+			return fmt.Errorf("启动 Agent %s 失败: %w", agentExec, err)
+		}
+		w.agentServers = append(w.agentServers, server)
 	}
 
-	if w.agentServer == nil {
-		w.agentServer = NewAgentServer()
-	}
-
-	return w.agentServer.Start(agentExec, w.pi.Agent.ChildArgs)
+	return nil
 }
 
 // Cleanup 清理资源
@@ -498,10 +531,10 @@ func (w *Wrapper) Cleanup() {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	if w.agentServer != nil {
-		w.agentServer.Stop()
-		w.agentServer = nil
+	for _, server := range w.agentServers {
+		server.Stop()
 	}
+	w.agentServers = nil
 
 	if w.tasker != nil {
 		w.tasker.Destroy()

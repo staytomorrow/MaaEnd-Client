@@ -67,4 +67,50 @@ func TestLoadInterface(t *testing.T) {
 	for _, ctrl := range pi.Controllers {
 		fmt.Printf("- %s (类型: %s)\n", ctrl.Name, ctrl.Type)
 	}
+
+	// 验证 Preset
+	fmt.Printf("\n预设数: %d\n", len(pi.Presets))
+	for _, preset := range pi.Presets {
+		fmt.Printf("- %s (%s): %d 个任务\n", preset.Name, pi.GetI18nString(preset.Label, "zh_cn"), len(preset.Tasks))
+		for _, pt := range preset.Tasks {
+			fmt.Printf("    任务: %s, 选项: %v\n", pt.Name, pt.Option)
+		}
+	}
+	if len(pi.Presets) == 0 {
+		t.Error("预设列表为空，preset 导入可能没有正确工作")
+	}
+
+	// 验证 Agent 数组
+	fmt.Printf("\nAgent 数: %d\n", len(pi.Agent))
+	for _, agent := range pi.Agent {
+		fmt.Printf("- exec: %s, args: %v\n", agent.ChildExec, agent.ChildArgs)
+	}
+	if len(pi.Agent) == 0 {
+		t.Error("Agent 列表为空")
+	}
+
+	// 验证 input 类型选项的 Inputs 字段
+	fmt.Println("\n=== input 类型选项 ===")
+	for name, opt := range pi.Options {
+		if opt.Type == "input" && len(opt.Inputs) > 0 {
+			fmt.Printf("- %s: %d 个输入字段\n", name, len(opt.Inputs))
+			for _, inp := range opt.Inputs {
+				fmt.Printf("    %s (type=%s, default=%v, verify=%s)\n", inp.Name, inp.PipelineType, inp.Default, inp.Verify)
+			}
+			break
+		}
+	}
+
+	// 验证 AttachResourcePath
+	for _, ctrl := range pi.Controllers {
+		if len(ctrl.AttachResourcePath) > 0 {
+			fmt.Printf("\n控制器 %s 附加资源: %v\n", ctrl.Name, ctrl.AttachResourcePath)
+		}
+	}
+
+	// 验证 ResourceConfig.Label
+	fmt.Println("\n=== 资源 ===")
+	for _, res := range pi.Resources {
+		fmt.Printf("- %s (label: %s)\n", res.Name, pi.GetI18nString(res.Label, "zh_cn"))
+	}
 }
