@@ -8,6 +8,8 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 
@@ -25,14 +27,39 @@ var (
 	debugMode  = flag.Bool("debug", false, "调试模式")
 )
 
+// waitExit prints a message and waits for Enter before exiting.
+// On Windows this prevents the console from closing immediately after a fatal error.
+func waitExit(code int) {
+	if runtime.GOOS == "windows" {
+		fmt.Println("\n按 Enter 键退出...")
+		bufio.NewReader(os.Stdin).ReadBytes('\n')
+	}
+	os.Exit(code)
+}
+
+// fatal logs an error and calls waitExit(1) so the user can read the message.
+func fatal(format string, args ...interface{}) {
+	log.Printf("[FATAL] "+format, args...)
+	waitExit(1)
+}
+
 func main() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[PANIC] 程序崩溃: %v", r)
+			buf := make([]byte, 4096)
+			n := runtime.Stack(buf, false)
+			log.Printf("[PANIC] Stack trace:\n%s", buf[:n])
+			waitExit(1)
+		}
+	}()
+
 	flag.Parse()
 
 	if err := ensureAdmin(); err != nil {
-		log.Fatalf("需要管理员权限启动: %v", err)
+		fatal("需要管理员权限启动: %v", err)
 	}
 
-	// 设置日志格式
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
 	if *debugMode {
 		log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds | log.Lshortfile)
@@ -43,13 +70,11 @@ func main() {
 	fmt.Println("========================================")
 	fmt.Println()
 
-	// 加载配置
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		log.Fatalf("加载配置失败: %v", err)
+		fatal("加载配置失败: %v", err)
 	}
 
-	// 命令行参数覆盖配置
 	if *maaEndPath != "" {
 		cfg.MaaEnd.Path = *maaEndPath
 	}
@@ -57,36 +82,42 @@ func main() {
 		cfg.Server.WsURL = *serverURL
 	}
 
-	// 确保配置文件格式正确（修复被 viper 破坏的格式）
 	if err := config.EnsureConfigFormat(); err != nil {
 		log.Printf("警告: 无法修复配置文件格式: %v", err)
 	}
 
-	// 检查 MaaEnd 路径
 	if cfg.MaaEnd.Path == "" {
-		log.Fatal("未找到 MaaEnd 安装目录，请使用 -maaend 参数指定")
+		fatal("未找到 MaaEnd 安装目录，请使用 -maaend 参数指定或在 config.yaml 中配置 maaend.path")
 	}
 	log.Printf("MaaEnd 路径: %s", cfg.MaaEnd.Path)
 
-	// 初始化本地存储
+	// Pre-flight checks before calling into native code
+	interfacePath := filepath.Join(cfg.MaaEnd.Path, "interface.json")
+	if _, err := os.Stat(interfacePath); err != nil {
+		fatal("MaaEnd 路径无效: 未找到 interface.json (%s)\n请检查 maaend.path 配置是否正确", interfacePath)
+	}
+	maafwDir := filepath.Join(cfg.MaaEnd.Path, "maafw")
+	if info, err := os.Stat(maafwDir); err != nil || !info.IsDir() {
+		fatal("MaaEnd 路径无效: 未找到 maafw 目录 (%s)\n请确认 MaaEnd 已正确安装", maafwDir)
+	}
+
 	localStorage := store.NewStore("")
 	if localStorage.HasCredentials() {
 		cfg.Device.Token = localStorage.GetDeviceToken()
 		log.Printf("已加载保存的设备凭证")
 	}
 
-	// 初始化 MaaFramework
+	log.Printf("正在初始化 MaaFramework...")
 	maaWrapper := maa.NewWrapper(cfg.MaaEnd.Path)
 	if err := maaWrapper.Init(); err != nil {
-		log.Fatalf("初始化 MaaFramework 失败: %v", err)
+		fatal("初始化 MaaFramework 失败: %v\n可能原因:\n  1. MaaEnd 路径不正确\n  2. maafw 原生库与当前系统不兼容\n  3. 缺少 Visual C++ 运行库", err)
 	}
 	defer maaWrapper.Cleanup()
+	log.Printf("MaaFramework 初始化成功")
 
-	// 创建 WebSocket 客户端
 	wsClient := client.NewClient(cfg)
 	wsClient.SetMaaWrapper(&MaaWrapperAdapter{wrapper: maaWrapper})
 
-	// 设置回调
 	wsClient.SetCallbacks(
 		func() {
 			log.Println("[Main] 已连接到服务器")
@@ -95,26 +126,21 @@ func main() {
 			log.Println("[Main] 与服务器断开连接")
 		},
 		func(msg *client.Message) {
-			// 处理注册成功
 			if msg.Type == client.MsgTypeRegistered {
 				var payload client.RegisteredPayload
 				if err := msg.ParsePayload(&payload); err == nil {
-					// 保存到本地存储
 					localStorage.SaveCredentials(payload.DeviceID, payload.DeviceToken, cfg.Device.Name)
 				}
 			}
-			// 处理认证失败
 			if msg.Type == client.MsgTypeAuthFailed {
 				localStorage.ClearCredentials()
 			}
 		},
 	)
 
-	// 创建上下文
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// 处理退出信号
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
@@ -125,7 +151,6 @@ func main() {
 		wsClient.Stop()
 	}()
 
-	// 处理绑定码：使用 channel 解耦绑定码获取与发送
 	bindCodeCh := make(chan string, 1)
 
 	if *bindCode != "" {
@@ -157,11 +182,9 @@ func main() {
 		}()
 	}
 
-	// 等待连接成功后发送绑定码（如果有的话）
 	go func() {
 		select {
 		case code := <-bindCodeCh:
-			// 等待连接建立
 			select {
 			case <-wsClient.ConnectedCh():
 				wsClient.SendRegister(code)
@@ -171,7 +194,6 @@ func main() {
 		}
 	}()
 
-	// 运行客户端
 	log.Printf("连接服务器: %s", cfg.Server.WsURL)
 	if err := wsClient.Run(ctx); err != nil {
 		if err != context.Canceled {
@@ -187,32 +209,26 @@ type MaaWrapperAdapter struct {
 	wrapper *maa.Wrapper
 }
 
-// GetCapabilities 获取设备能力
 func (a *MaaWrapperAdapter) GetCapabilities() (*client.CapabilitiesPayload, error) {
 	return a.wrapper.GetCapabilities()
 }
 
-// RunTask 执行任务
 func (a *MaaWrapperAdapter) RunTask(job *client.Job, statusCh chan<- client.TaskStatusPayload, logCh chan<- client.TaskLogPayload) error {
 	return a.wrapper.RunTask(job, statusCh, logCh)
 }
 
-// StopTask 停止任务
 func (a *MaaWrapperAdapter) StopTask() error {
 	return a.wrapper.StopTask()
 }
 
-// TakeScreenshot 截图
 func (a *MaaWrapperAdapter) TakeScreenshot() ([]byte, int, int, error) {
 	return a.wrapper.TakeScreenshot()
 }
 
-// ClearEventChannels 清除事件通道引用
 func (a *MaaWrapperAdapter) ClearEventChannels() {
 	a.wrapper.ClearEventChannels()
 }
 
-// GetVersion 获取 MaaEnd 版本
 func (a *MaaWrapperAdapter) GetVersion() string {
 	return a.wrapper.GetVersion()
 }

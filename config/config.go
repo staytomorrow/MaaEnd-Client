@@ -90,6 +90,11 @@ func Load(configPath string) (*Config, error) {
 		cfg.Version = "0.3.0"
 	}
 
+	// 标准化路径（正斜杠，避免 YAML 转义问题）
+	if cfg.MaaEnd.Path != "" {
+		cfg.MaaEnd.Path = filepath.FromSlash(cfg.MaaEnd.Path)
+	}
+
 	// 自动检测 MaaEnd 路径
 	if cfg.MaaEnd.Path == "" {
 		cfg.MaaEnd.Path = detectMaaEndPath()
@@ -140,6 +145,9 @@ func SaveConfig() error {
 		}
 	}
 
+	// YAML double-quoted strings treat \ as escape, so normalize paths to /
+	safePath := filepath.ToSlash(globalConfig.MaaEnd.Path)
+
 	configContent := fmt.Sprintf(`# MaaEnd Client 配置文件
 
 # 客户端版本号
@@ -180,7 +188,7 @@ logging:
 		globalConfig.Server.ConnectTimeout,
 		globalConfig.Server.HeartbeatInterval,
 		globalConfig.Server.ReconnectMaxDelay,
-		globalConfig.MaaEnd.Path,
+		safePath,
 		globalConfig.MaaEnd.Win32ClassRegex,
 		globalConfig.MaaEnd.Win32WindowRegex,
 		globalConfig.Device.Name,
@@ -194,17 +202,22 @@ logging:
 
 // EnsureConfigFormat 检查并修复配置文件格式
 func EnsureConfigFormat() error {
-	// 检查配置文件是否存在
 	configFile := getConfigFilePath()
 	content, err := os.ReadFile(configFile)
 	if err != nil {
-		// 文件不存在，创建新的
 		return SaveConfig()
 	}
 
-	// 检查文件是否以注释开头（正确格式）
-	if !strings.HasPrefix(string(content), "# MaaEnd Client") {
-		// 格式被破坏，重新保存
+	text := string(content)
+
+	// Rewrite if the format header is missing or if Windows backslashes
+	// would produce invalid YAML escape sequences.
+	needsRewrite := !strings.HasPrefix(text, "# MaaEnd Client")
+	if !needsRewrite && runtime.GOOS == "windows" && strings.Contains(text, "\\") {
+		needsRewrite = true
+	}
+
+	if needsRewrite {
 		return SaveConfig()
 	}
 
