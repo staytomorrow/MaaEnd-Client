@@ -1,5 +1,19 @@
 # MaaEnd Client 更新日志
 
+## v0.4.0 (2026-03-06)
+
+### 新功能
+
+- 完成 P4 协议对齐：capabilities 增加 option 适用性字段（`option.controller` / `option.resource`）
+- 前端任务与选项渲染改为严格按协议上下文过滤（controller/resource 双维度）
+- 预设任务支持 `preset.task.enabled` 语义：前后端一致跳过禁用项
+
+### 兼容性改进
+
+- `default_case` 统一采用 `string[]` 语义（`select/switch` 取首项，`checkbox` 使用整组）
+
+---
+
 ## v0.3.0 (2026-02-02)
 
 ### 新功能

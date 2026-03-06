@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -72,12 +73,14 @@ type ProjectInterface struct {
 	Languages        map[string]string        `json:"languages"`
 	Controllers      []ControllerConfig       `json:"controller"`
 	Resources        []ResourceConfig         `json:"resource"`
-	Agent            []AgentConfig            `json:"agent"`
+	AgentRaw         json.RawMessage          `json:"agent"`
 	Tasks            []TaskConfig             `json:"task"`
 	Options          map[string]*OptionConfig `json:"option"`
+	GlobalOption     []string                 `json:"global_option"`
 	Import           []string                 `json:"import"` // 外部任务文件路径列表
 
-	Presets          []PresetConfig           `json:"-"` // 从导入文件中解析的 Preset
+	Agent   []AgentConfig  `json:"-"` // 统一解析后的 Agent 列表
+	Presets []PresetConfig `json:"-"` // 从导入文件中解析的 Preset
 
 	// 解析后的国际化文本
 	i18nTexts map[string]map[string]string // lang -> key -> value
@@ -94,21 +97,23 @@ type PresetConfig struct {
 
 // PresetTask 预设中的单个任务
 type PresetTask struct {
-	Name   string                 `json:"name"`
-	Option map[string]interface{} `json:"option,omitempty"`
+	Name    string                 `json:"name"`
+	Enabled *bool                  `json:"enabled,omitempty"`
+	Option  map[string]interface{} `json:"option,omitempty"`
 }
 
 // ControllerConfig 控制器配置
 type ControllerConfig struct {
-	Name               string       `json:"name"`
-	Label              string       `json:"label"`
-	Description        string       `json:"description,omitempty"`
-	Type               string       `json:"type"`
-	Win32              *Win32Config `json:"win32,omitempty"`
-	Adb                *AdbConfig   `json:"adb,omitempty"`
+	Name               string           `json:"name"`
+	Label              string           `json:"label"`
+	Description        string           `json:"description,omitempty"`
+	Type               string           `json:"type"`
+	Win32              *Win32Config     `json:"win32,omitempty"`
+	Adb                *AdbConfig       `json:"adb,omitempty"`
 	PlayCover          *PlayCoverConfig `json:"playcover,omitempty"`
-	AttachResourcePath []string     `json:"attach_resource_path,omitempty"`
-	PermissionRequired bool         `json:"permission_required"`
+	AttachResourcePath []string         `json:"attach_resource_path,omitempty"`
+	Option             []string         `json:"option,omitempty"`
+	PermissionRequired bool             `json:"permission_required"`
 }
 
 // AdbConfig ADB 控制器配置
@@ -135,9 +140,11 @@ type Win32Config struct {
 
 // ResourceConfig 资源配置
 type ResourceConfig struct {
-	Name  string   `json:"name"`
-	Label string   `json:"label,omitempty"`
-	Path  []string `json:"path"`
+	Name       string   `json:"name"`
+	Label      string   `json:"label,omitempty"`
+	Path       []string `json:"path"`
+	Controller []string `json:"controller,omitempty"`
+	Option     []string `json:"option,omitempty"`
 }
 
 // AgentConfig Agent 配置
@@ -167,8 +174,10 @@ type OptionConfig struct {
 	Default          string                 `json:"default,omitempty"`
 	Cases            []CaseConfig           `json:"cases,omitempty"`
 	Inputs           []InputConfig          `json:"inputs,omitempty"`
-	DefaultCase      string                 `json:"default_case,omitempty"`
+	DefaultCase      interface{}            `json:"default_case,omitempty"`
 	Controller       []string               `json:"controller,omitempty"`
+	Resource         []string               `json:"resource,omitempty"`
+	Option           []string               `json:"option,omitempty"`
 	PipelineOverride map[string]interface{} `json:"pipeline_override,omitempty"`
 }
 
@@ -228,6 +237,10 @@ func LoadInterface(maaEndPath string) (*ProjectInterface, error) {
 		return nil, fmt.Errorf("解析 interface.json 失败: %w", err)
 	}
 
+	if err := normalizeAgentConfigs(&pi); err != nil {
+		return nil, fmt.Errorf("解析 agent 配置失败: %w", err)
+	}
+
 	pi.basePath = maaEndPath
 	pi.i18nTexts = make(map[string]map[string]string)
 
@@ -255,6 +268,88 @@ func LoadInterface(maaEndPath string) (*ProjectInterface, error) {
 	return &pi, nil
 }
 
+func normalizeAgentConfigs(pi *ProjectInterface) error {
+	if pi == nil || len(pi.AgentRaw) == 0 {
+		pi.Agent = nil
+		return nil
+	}
+
+	trimmed := bytes.TrimSpace(pi.AgentRaw)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		pi.Agent = nil
+		return nil
+	}
+
+	switch trimmed[0] {
+	case '{':
+		var single AgentConfig
+		if err := json.Unmarshal(trimmed, &single); err != nil {
+			return err
+		}
+		pi.Agent = []AgentConfig{single}
+	case '[':
+		var list []AgentConfig
+		if err := json.Unmarshal(trimmed, &list); err != nil {
+			return err
+		}
+		pi.Agent = list
+	default:
+		return fmt.Errorf("agent 字段必须是对象或对象数组")
+	}
+
+	return nil
+}
+
+func getDefaultCaseList(opt *OptionConfig) []string {
+	if opt == nil || opt.DefaultCase == nil {
+		return nil
+	}
+
+	switch v := opt.DefaultCase.(type) {
+	case string:
+		if strings.TrimSpace(v) == "" {
+			return nil
+		}
+		parts := strings.Split(v, ",")
+		result := make([]string, 0, len(parts))
+		for _, p := range parts {
+			if s := strings.TrimSpace(p); s != "" {
+				result = append(result, s)
+			}
+		}
+		return result
+	case []interface{}:
+		result := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				s = strings.TrimSpace(s)
+				if s != "" {
+					result = append(result, s)
+				}
+			}
+		}
+		return result
+	case []string:
+		result := make([]string, 0, len(v))
+		for _, item := range v {
+			if s := strings.TrimSpace(item); s != "" {
+				result = append(result, s)
+			}
+		}
+		return result
+	default:
+		return nil
+	}
+}
+
+func getDefaultCaseFirst(opt *OptionConfig) string {
+	cases := getDefaultCaseList(opt)
+	if len(cases) == 0 {
+		return ""
+	}
+	return cases[0]
+}
+
 // ImportedFile 外部导入文件的结构
 type ImportedFile struct {
 	Tasks   []TaskConfig             `json:"task"`
@@ -279,7 +374,7 @@ func (pi *ProjectInterface) loadImportedFile(relativePath string) error {
 	}
 
 	// 合并任务
-	pi.Tasks = append(pi.Tasks, imported.Tasks...)
+	pi.Tasks = mergeTasksByName(pi.Tasks, imported.Tasks)
 
 	// 合并选项
 	for name, opt := range imported.Options {
@@ -289,9 +384,69 @@ func (pi *ProjectInterface) loadImportedFile(relativePath string) error {
 	}
 
 	// 合并预设
-	pi.Presets = append(pi.Presets, imported.Presets...)
+	pi.Presets = mergePresetsByName(pi.Presets, imported.Presets)
 
 	return nil
+}
+
+func mergeTasksByName(base []TaskConfig, incoming []TaskConfig) []TaskConfig {
+	if len(incoming) == 0 {
+		return base
+	}
+
+	result := make([]TaskConfig, len(base))
+	copy(result, base)
+	index := make(map[string]int, len(result))
+	for i, t := range result {
+		if t.Name != "" {
+			index[t.Name] = i
+		}
+	}
+
+	for _, t := range incoming {
+		if t.Name == "" {
+			result = append(result, t)
+			continue
+		}
+		if i, ok := index[t.Name]; ok {
+			result[i] = t
+			continue
+		}
+		index[t.Name] = len(result)
+		result = append(result, t)
+	}
+
+	return result
+}
+
+func mergePresetsByName(base []PresetConfig, incoming []PresetConfig) []PresetConfig {
+	if len(incoming) == 0 {
+		return base
+	}
+
+	result := make([]PresetConfig, len(base))
+	copy(result, base)
+	index := make(map[string]int, len(result))
+	for i, p := range result {
+		if p.Name != "" {
+			index[p.Name] = i
+		}
+	}
+
+	for _, p := range incoming {
+		if p.Name == "" {
+			result = append(result, p)
+			continue
+		}
+		if i, ok := index[p.Name]; ok {
+			result[i] = p
+			continue
+		}
+		index[p.Name] = len(result)
+		result = append(result, p)
+	}
+
+	return result
 }
 
 // loadI18n 加载国际化文件

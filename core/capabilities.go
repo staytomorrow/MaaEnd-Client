@@ -50,8 +50,13 @@ func (b *CapabilitiesBuilder) Build() *client.CapabilitiesPayload {
 			Tasks:       make([]client.PresetTaskInfo, 0, len(preset.Tasks)),
 		}
 		for _, pt := range preset.Tasks {
+			enabled := true
+			if pt.Enabled != nil {
+				enabled = *pt.Enabled
+			}
 			presetInfo.Tasks = append(presetInfo.Tasks, client.PresetTaskInfo{
 				Name:    pt.Name,
+				Enabled: enabled,
 				Options: pt.Option,
 			})
 		}
@@ -76,7 +81,9 @@ func (b *CapabilitiesBuilder) buildTaskOptions(optionNames []string) []client.Op
 			Type:        opt.Type,
 			Label:       b.pi.GetI18nString(opt.Label, b.lang),
 			Description: b.pi.GetI18nString(opt.Description, b.lang),
-			DefaultCase: opt.DefaultCase,
+			DefaultCase: getDefaultCaseList(opt),
+			Controller:  opt.Controller,
+			Resource:    opt.Resource,
 		}
 
 		if len(opt.Cases) > 0 {

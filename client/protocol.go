@@ -110,7 +110,9 @@ type OptionInfo struct {
 	Description string      `json:"description,omitempty"`
 	Cases       []CaseInfo  `json:"cases,omitempty"`
 	Inputs      []InputInfo `json:"inputs,omitempty"`
-	DefaultCase string      `json:"default_case,omitempty"`
+	DefaultCase []string    `json:"default_case,omitempty"`
+	Controller  []string    `json:"controller,omitempty"`
+	Resource    []string    `json:"resource,omitempty"`
 }
 
 // CaseInfo 选项分支
@@ -141,6 +143,7 @@ type PresetInfo struct {
 // PresetTaskInfo 预设中的单个任务
 type PresetTaskInfo struct {
 	Name    string                 `json:"name"`
+	Enabled bool                   `json:"enabled"`
 	Options map[string]interface{} `json:"options,omitempty"`
 }
 

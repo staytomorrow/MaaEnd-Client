@@ -24,7 +24,8 @@ maaend-client/
 ├── core/                   # 核心解析器
 │   ├── capabilities.go     # 设备能力构建
 │   ├── interface_parser.go # interface.json 解析
-│   └── option_resolver.go  # 任务选项解析
+│   ├── option_resolver.go  # PI 选项规则解析（激活/合并）
+│   └── task_compiler.go    # 任务参数编译器（生成最终 override）
 │
 ├── maa/                    # MaaFramework 封装
 │   ├── wrapper.go          # 主封装类
@@ -140,12 +141,15 @@ maaend-client/
 
 **capabilities.go**
 - 构建设备能力信息
-- 任务列表
-- 选项信息
+- 任务列表（含 task.controller / task.resource 适用性）
+- 选项信息（含 option.controller / option.resource / default_case[] 语义）
+- 预设信息（含 preset.task.enabled）
 
 **option_resolver.go**
-- 解析用户选择的任务选项
-- 生成 pipeline_override
+- 按 PI v2.3.1 规则解析用户选择的任务选项
+- 支持 option 激活过滤（controller/resource）
+- 支持标准合并顺序：global < resource < controller < task
+- 生成最终 pipeline_override（含 input pipeline_type 类型转换）
 
 #### 5. store/ - 本地存储
 
@@ -154,6 +158,38 @@ maaend-client/
 **store.go**
 - 保存/加载设备 Token
 - JSON 文件存储
+
+### 任务参数编译（PI v2.3.1）
+
+MEC 在执行任务前会先进行“任务参数编译”，由 `core/task_compiler.go` 负责：
+
+- 输入：`task + userOptions + context(controller/resource)`
+- 规则：
+  - option 激活过滤（`option.controller` / `option.resource`）
+  - 嵌套 option 递归激活过滤
+  - 合并顺序：`global_option < resource.option < controller.option < task.option`
+  - input 类型 `pipeline_type` 转换（`string/int/bool`）
+- 输出：最终 `pipeline_override`
+
+编译阶段与执行阶段解耦：
+
+- 编译阶段：`TaskCompiler.Compile(...)`
+- 执行阶段：`Tasker.PostTask(entry, compiledOverride)`
+
+这样可以在不连接 MaaFW 的情况下，对协议语义进行单元测试和回归验证。
+
+### P4 前后端协议对齐（能力上报）
+
+已完成以下协议对齐项：
+
+- `OptionInfo.default_case` 统一为 `string[]` 语义（前端：`select/switch` 取首项，`checkbox` 使用整组默认值）。
+- capabilities 中补齐 `option.controller` / `option.resource`，前端按上下文过滤 option，不再依赖项目特判。
+- 前端任务可见性统一按协议过滤：`task.controller` + `task.resource` 双维度。
+- 预设任务补齐 `preset.task.enabled` 语义：
+  - 后端展开 preset 时跳过 `enabled=false` 项；
+  - 前端展示“启用任务数/总数”，无可执行项时禁用按钮。
+
+以上改造保证 UI 与 MaaFW PI 协议字段一一映射，后续新增协议字段可按同一模式扩展。
 
 ## 核心流程
 
@@ -224,10 +260,14 @@ main()
   │     ├─► 绑定资源
   │     └─► 注册回调
   │
-  └─► 执行任务 (RunTask)
+  ├─► 执行任务 (RunTask)
+        │
+        ├─► 基于上下文编译任务参数（ResolveTaskOptions）
+        │     ├─► 过滤未激活 option
+        │     ├─► 按 global/resource/controller/task 顺序合并
+        │     └─► 生成 pipeline_override
         │
         ├─► 遍历任务列表
-        │     ├─► 解析选项 (ResolveTaskOptions)
         │     ├─► 执行任务 (PostTask)
         │     └─► 上报状态 (task_status)
         │

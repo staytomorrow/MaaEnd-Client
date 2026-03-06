@@ -20,7 +20,7 @@ func NewAgentServer() *AgentServer {
 }
 
 // Start 启动 Agent
-func (a *AgentServer) Start(execPath string, args []string) error {
+func (a *AgentServer) Start(execPath string, args []string, workDir string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
@@ -30,15 +30,13 @@ func (a *AgentServer) Start(execPath string, args []string) error {
 
 	log.Printf("[Agent] 启动: %s %v", execPath, args)
 
-	// 检查文件是否存在
-	if _, err := os.Stat(execPath); err != nil {
-		return err
-	}
-
 	// 创建命令
 	a.cmd = exec.Command(execPath, args...)
 	a.cmd.Stdout = os.Stdout
 	a.cmd.Stderr = os.Stderr
+	if workDir != "" {
+		a.cmd.Dir = workDir
+	}
 
 	// 启动
 	if err := a.cmd.Start(); err != nil {

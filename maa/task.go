@@ -61,7 +61,10 @@ func (e *TaskExecutor) executeTask(task client.RunTaskItem, _ int) error {
 	e.sendStatus("running", task.Name, fmt.Sprintf("正在执行: %s", taskConfig.Label))
 
 	// 解析选项
-	override, err := e.resolver.ResolveTaskOptions(task.Name, task.Options)
+	override, err := e.resolver.ResolveTaskOptions(task.Name, task.Options, core.ResolveContext{
+		Controller: e.wrapper.currentController,
+		Resource:   e.wrapper.currentResource,
+	})
 	if err != nil {
 		return fmt.Errorf("解析选项失败: %w", err)
 	}

@@ -2,12 +2,18 @@ package core
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
 func TestLoadInterface(t *testing.T) {
 	// 测试加载 MaaEnd v1.6.5 的 interface.json
 	maaEndPath := "E:\\Dnyo\\Documents\\work\\endfield\\Endfield-API\\MaaEnd-win-x86_64-v1.6.5"
+
+	if _, err := os.Stat(filepath.Join(maaEndPath, "interface.json")); err != nil {
+		t.Skipf("跳过依赖本地 MaaEnd 目录的测试: %v", err)
+	}
 
 	pi, err := LoadInterface(maaEndPath)
 	if err != nil {

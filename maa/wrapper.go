@@ -395,8 +395,8 @@ func (w *Wrapper) RunTask(job *client.Job, statusCh chan<- client.TaskStatusPayl
 		log.Printf("[Maa] 启动 Agent 失败: %v (继续执行)", err)
 	}
 
-	// 创建选项解析器
-	resolver := core.NewOptionResolver(w.pi)
+	// 创建任务参数编译器
+	compiler := core.NewTaskCompiler(w.pi)
 
 	// 执行每个任务
 	var taskErr error
@@ -407,12 +407,16 @@ func (w *Wrapper) RunTask(job *client.Job, statusCh chan<- client.TaskStatusPayl
 			break
 		}
 
-		taskConfig := w.pi.GetTask(taskItem.Name)
-		if taskConfig == nil {
-			log.Printf("[Maa] 任务不存在，跳过: %s", taskItem.Name)
-			continue
+		compiled, err := compiler.Compile(taskItem.Name, taskItem.Options, core.ResolveContext{
+			Controller: job.Controller,
+			Resource:   job.Resource,
+		})
+		if err != nil {
+			taskErr = err
+			break
 		}
 
+		taskConfig := compiled.Task
 		log.Printf("[Maa] 执行任务 [%d/%d]: %s", i+1, total, taskItem.Name)
 
 		w.eventHandler.SendStatus(client.TaskStatusPayload{
@@ -423,13 +427,7 @@ func (w *Wrapper) RunTask(job *client.Job, statusCh chan<- client.TaskStatusPayl
 			Message:     fmt.Sprintf("正在执行: %s", taskConfig.Label),
 		})
 
-		override, err := resolver.ResolveTaskOptions(taskItem.Name, taskItem.Options)
-		if err != nil {
-			taskErr = fmt.Errorf("解析选项失败 (%s): %w", taskItem.Name, err)
-			break
-		}
-
-		taskJob := w.tasker.PostTask(taskConfig.Entry, override)
+		taskJob := w.tasker.PostTask(taskConfig.Entry, compiled.Override)
 		taskJob.Wait()
 
 		if w.stopRequested {
@@ -509,16 +507,15 @@ func (w *Wrapper) startAgents() error {
 		if agentCfg.ChildExec == "" {
 			continue
 		}
-		agentExec := filepath.Join(w.pi.GetBasePath(), agentCfg.ChildExec)
 
-		if _, err := os.Stat(agentExec); os.IsNotExist(err) {
-			log.Printf("[Maa] Agent 服务文件不存在: %s (部分功能如自定义识别器将不可用)", agentExec)
-			continue
+		agentExec := agentCfg.ChildExec
+		if !filepath.IsAbs(agentExec) {
+			agentExec = filepath.Join(w.pi.GetBasePath(), agentExec)
 		}
 
 		server := NewAgentServer()
-		if err := server.Start(agentExec, agentCfg.ChildArgs); err != nil {
-			return fmt.Errorf("启动 Agent %s 失败: %w", agentExec, err)
+		if err := server.Start(agentExec, agentCfg.ChildArgs, w.pi.GetBasePath()); err != nil {
+			return fmt.Errorf("启动 Agent %s 失败: %w", agentCfg.ChildExec, err)
 		}
 		w.agentServers = append(w.agentServers, server)
 	}
