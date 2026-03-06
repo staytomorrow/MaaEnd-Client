@@ -242,4 +242,4 @@ A: 查看控制台日志了解详细错误信息。常见原因：
 
 ## 许可证
 
-MIT License
+GNU Affero General Public License v3.0 (AGPL-3.0-or-later)
