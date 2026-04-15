@@ -229,7 +229,8 @@ type StopTaskPayload struct {
 
 // RequestScreenshotPayload 请求截图负载
 type RequestScreenshotPayload struct {
-	RequestID string `json:"request_id"`
+	RequestID  string `json:"request_id"`
+	Controller string `json:"controller,omitempty"`
 }
 
 // ErrorPayload 错误通知负载

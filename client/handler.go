@@ -260,7 +260,14 @@ func (c *Client) handleRequestScreenshot(msg *Message) {
 
 	// 异步截图
 	go func() {
-		imageData, width, height, err := c.maaWrapper.TakeScreenshot()
+		controller := payload.Controller
+		if controller == "" {
+			if currentJob := c.GetCurrentJob(); currentJob != nil {
+				controller = currentJob.Controller
+			}
+		}
+
+		imageData, width, height, err := c.maaWrapper.TakeScreenshot(controller)
 		if err != nil {
 			log.Printf("[Client] 截图失败: %v", err)
 			c.SendScreenshot(payload.RequestID, "", 0, 0, err.Error())

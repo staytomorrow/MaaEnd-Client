@@ -133,6 +133,10 @@ func (w *Wrapper) ConnectController(name string) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	return w.connectControllerLocked(name)
+}
+
+func (w *Wrapper) connectControllerLocked(name string) error {
 	if w.currentController == name && w.controller != nil {
 		return nil // 已连接
 	}
@@ -189,6 +193,72 @@ func (w *Wrapper) ConnectController(name string) error {
 
 // ScreenshotTargetLongSide MaaEnd 资源基于 1280x720 设计，长边 1280
 // MaaFramework 会自动将截图缩放到此分辨率，保证 ROI 坐标正确匹配
+func (w *Wrapper) screenshotControllerCandidatesLocked(preferred string) []string {
+	if w.pi == nil {
+		return nil
+	}
+
+	candidates := make([]string, 0, len(w.pi.Controllers)+2)
+	seen := make(map[string]struct{}, len(w.pi.Controllers)+2)
+
+	add := func(name string) {
+		if name == "" {
+			return
+		}
+		if _, ok := seen[name]; ok {
+			return
+		}
+		if w.pi.GetController(name) == nil {
+			return
+		}
+		seen[name] = struct{}{}
+		candidates = append(candidates, name)
+	}
+
+	if preferred != "" && w.pi.GetController(preferred) == nil {
+		log.Printf("[Maa] 截图请求指定的控制器不存在，回退到自动选择: %s", preferred)
+	}
+
+	add(preferred)
+	add(w.currentController)
+
+	for _, name := range w.pi.GetControllerNames() {
+		add(name)
+	}
+
+	return candidates
+}
+
+func (w *Wrapper) ensureScreenshotControllerLocked(preferred string) (string, error) {
+	candidates := w.screenshotControllerCandidatesLocked(preferred)
+	if len(candidates) == 0 {
+		return "", fmt.Errorf("控制器未连接: 没有可用控制器配置")
+	}
+
+	var lastErr error
+	for _, name := range candidates {
+		if w.currentController == name && w.controller != nil {
+			if w.controller.Connected() {
+				return name, nil
+			}
+			w.controller.Destroy()
+			w.controller = nil
+		}
+
+		if err := w.connectControllerLocked(name); err != nil {
+			log.Printf("[Maa] 截图前连接控制器失败: %s: %v", name, err)
+			lastErr = err
+			continue
+		}
+		return name, nil
+	}
+
+	if lastErr != nil {
+		return "", fmt.Errorf("控制器未连接: %w", lastErr)
+	}
+	return "", fmt.Errorf("控制器未连接")
+}
+
 const ScreenshotTargetLongSide int32 = 1280
 
 // createWin32Controller 创建 Win32 控制器
@@ -474,7 +544,30 @@ func (w *Wrapper) ClearEventChannels() {
 }
 
 // TakeScreenshot 截图
-func (w *Wrapper) TakeScreenshot() ([]byte, int, int, error) {
+func (w *Wrapper) TakeScreenshot(preferredController string) ([]byte, int, int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if !w.initialized {
+		return nil, 0, 0, fmt.Errorf("MaaFramework 未初始化")
+	}
+
+	needsConnect := w.controller == nil
+	if w.controller != nil && !w.controller.Connected() {
+		needsConnect = true
+	}
+	if preferredController != "" && preferredController != w.currentController {
+		needsConnect = true
+	}
+
+	if needsConnect {
+		controllerName, err := w.ensureScreenshotControllerLocked(preferredController)
+		if err != nil {
+			return nil, 0, 0, err
+		}
+		log.Printf("[Maa] 截图使用控制器: %s", controllerName)
+	}
+
 	if w.controller == nil {
 		return nil, 0, 0, fmt.Errorf("控制器未连接")
 	}

@@ -472,7 +472,7 @@ type MaaWrapperInterface interface {
     StopTask() error
     
     // 截图
-    TakeScreenshot() ([]byte, int, int, error)
+    TakeScreenshot(controller string) ([]byte, int, int, error)
     
     // 清除事件通道引用
     ClearEventChannels()

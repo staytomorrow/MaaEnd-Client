@@ -62,7 +62,7 @@ type MaaWrapperInterface interface {
 	GetCapabilities() (*CapabilitiesPayload, error)
 	RunTask(job *Job, statusCh chan<- TaskStatusPayload, logCh chan<- TaskLogPayload) error
 	StopTask() error
-	TakeScreenshot() ([]byte, int, int, error)
+	TakeScreenshot(controller string) ([]byte, int, int, error)
 	ClearEventChannels() // 清除事件通道引用，防止关闭后写入导致 panic
 	GetVersion() string  // 获取 MaaEnd 版本
 }

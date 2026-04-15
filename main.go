@@ -221,8 +221,8 @@ func (a *MaaWrapperAdapter) StopTask() error {
 	return a.wrapper.StopTask()
 }
 
-func (a *MaaWrapperAdapter) TakeScreenshot() ([]byte, int, int, error) {
-	return a.wrapper.TakeScreenshot()
+func (a *MaaWrapperAdapter) TakeScreenshot(controller string) ([]byte, int, int, error) {
+	return a.wrapper.TakeScreenshot(controller)
 }
 
 func (a *MaaWrapperAdapter) ClearEventChannels() {
